@@ -3,14 +3,18 @@ import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
+import java.util.function.Function;
+import org.eclipse.lsp4j.jsonrpc.MessageConsumer;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
-
+import org.eclipse.lsp4j.jsonrpc.messages.Message;
+import org.eclipse.lsp4j.jsonrpc.messages.NotificationMessage;
 import magpiebridge.core.IProjectService;
 import magpiebridge.core.MagpieServer;
 import magpiebridge.core.ServerAnalysis;
 import magpiebridge.core.ServerConfiguration;
 import magpiebridge.core.ToolAnalysis;
 import magpiebridge.projectservice.java.JavaProjectService;
+import magpiebridge.util.MagpieMessageLogger;
 
 public class TutorialMain {
   public static void main(String... args) {
@@ -19,7 +23,7 @@ public class TutorialMain {
 
     // launch the server, here we choose stand I/O. Note later don't use System.out
     // to print text messages to console, it will block the channel.
-    //createServer(preparedFile).launchOnStdio();
+    // createServer(preparedFile).launchOnStdio();
 
     // for debugging
     MagpieServer.launchOnSocketPort(5007, () -> createServer(preparedFile));
@@ -30,9 +34,13 @@ public class TutorialMain {
     ServerConfiguration defaultConfig = new ServerConfiguration();
     try {
 
-      File logFile = Files.createTempFile("magpie_server_trace", ".lsp").toFile();
-      defaultConfig.setLSPMessageTracer(new PrintWriter(logFile));
-    } catch (IOException e) {
+      File traceFile = Files.createTempFile("magpie_server_trace", ".lsp").toFile();
+      defaultConfig.setLSPMessageTracer(new PrintWriter(traceFile));
+
+      defaultConfig.setMagpieMessageLogger(new DiagnosticsLogger());
+    } catch (
+
+    IOException e) {
       e.printStackTrace();
     }
     MagpieServer server = new MagpieServer(defaultConfig);
@@ -48,5 +56,44 @@ public class TutorialMain {
     Either<ServerAnalysis, ToolAnalysis> analysis = Either.forLeft(myAnalysis);
     server.addAnalysis(analysis, language);
     return server;
+  }
+
+
+  static class DiagnosticsLogger implements MagpieMessageLogger {
+
+    private PrintWriter logWriter;
+
+    public DiagnosticsLogger() throws IOException {
+      File logFile = Files.createTempFile("magpie_server_diag", ".log").toFile();
+      this.logWriter = new PrintWriter(logFile);
+
+    }
+
+    @Override
+    public Function<MessageConsumer, MessageConsumer> getWrapper() {
+      return (MessageConsumer c) -> {
+        MessageConsumer wrapping = (Message message) -> {
+          // only log messages with method 'textDocument/publishDiagnostics'
+          if (message instanceof NotificationMessage && "textDocument/publishDiagnostics"
+              .equals(((NotificationMessage) message).getMethod())) {
+            logWriter.println(message);
+            logWriter.flush();
+          }
+          // hand the message to the wrapped consumer so it can be processed by the server
+          c.consume(message);
+        };
+        return wrapping;
+      };
+    }
+
+    @Override
+    public void cleanUp() {
+      // close the log file
+      if (logWriter != null) {
+        logWriter.flush();
+        logWriter.close();
+        logWriter = null;
+      }
+    }
   }
 }
